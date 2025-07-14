@@ -19,7 +19,7 @@ jobs:
         run: pip install -r requirements.txt pyinstaller
 
       - name: Build EXE
-        run: pyinstaller --onefile --windowed --icon=program_icon.ico SteamVideoClip.py
+        run: pyinstaller --onefile --windowed --icon=program_icon.ico SteamVideoClip.py --hidden-import=moviepy.editor
 
       - name: Determine next version
         id: tag
