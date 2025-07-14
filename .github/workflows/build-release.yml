@@ -20,8 +20,8 @@ jobs:
 
       - name: Clean build folders
         run: |
-          Remove-Item -Recurse -Force build, dist
-          Remove-Item -Force SteamVideoClip.spec
+          Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
+          Remove-Item -Force SteamVideoClip.spec -ErrorAction SilentlyContinue
 
       - name: Build EXE
         run: pyinstaller --onefile --windowed --icon=program_icon.ico SteamVideoClip.py \
