@@ -220,7 +220,7 @@ SteamVideoClip.py
 ### 開發環境設定
 ```bash
 # 克隆專案
-git clone https://github.com/[你的用戶名]/Steam-Workshop-GIF-Converter.git
+git clone https://github.com/howard1688/Steam-Workshop-GIF-Converter.git
 cd Steam-Workshop-GIF-Converter
 
 # 安裝開發依賴
