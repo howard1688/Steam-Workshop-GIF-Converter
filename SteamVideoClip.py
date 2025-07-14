@@ -1,4 +1,4 @@
-import moviepy.editor
+from moviepy.editor import *
 import selenium.webdriver.edge.options
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtGui import *
