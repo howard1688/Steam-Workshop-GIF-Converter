@@ -870,15 +870,12 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                         
                         # 使用更安全的 GIF 輸出參數
                         try:
-                            gif_segment.write_gif(output_file, fps=fps_value, 
-                                                verbose=False, logger=None,
-                                                opt='OptimizeTransparency')
+                            gif_segment.write_gif(output_file, fps=fps_value, logger=None)
                         except Exception as gif_error:
                             print(f"GIF輸出失敗，嘗試備用方法：{str(gif_error)}")
-                            # 嘗試不使用優化選項
+                            # 嘗試使用預設參數
                             try:
-                                gif_segment.write_gif(output_file, fps=fps_value, 
-                                                    verbose=False, logger=None)
+                                gif_segment.write_gif(output_file, fps=fps_value)
                             except Exception as gif_error2:
                                 print(f"part{i+1} GIF輸出完全失敗：{str(gif_error2)}")
                                 continue
