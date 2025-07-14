@@ -23,6 +23,7 @@ jobs:
 
       - name: Determine next version
         id: tag
+        shell: bash
         run: |
           git fetch --tags
           latest_tag=$(git tag --list 'v*' | sort -V | tail -n1)
