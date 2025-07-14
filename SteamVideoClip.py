@@ -1,5 +1,4 @@
-from moviepy.editor import VideoFileClip
-from moviepy.video.fx.all import resize, crop
+from moviepy.video.io.VideoFileClip import VideoFileClip
 import selenium.webdriver.edge.options
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtGui import *
@@ -753,7 +752,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                 self.progressBar.setValue(40)
                 self.label_progress.setText(f"正在裁剪時間段: {self.start_time}-{self.finish_time}秒...")
                 QtWidgets.QApplication.processEvents()
-                video = video.subclip(self.start_time, self.finish_time)
+                video = video.subclipped(self.start_time, self.finish_time)
                 if video is None:
                     self.progressBar.setVisible(False)
                     self.label_progress.setVisible(False)
@@ -765,7 +764,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                 self.progressBar.setValue(50)
                 self.label_progress.setText("正在調整影片尺寸...")
                 QtWidgets.QApplication.processEvents()
-                video = resize(video, (770,449))
+                video = video.resized((770,449))
                 if video is None:
                     self.progressBar.setVisible(False)
                     self.label_progress.setVisible(False)
@@ -833,7 +832,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                             continue
                             
                         # 執行裁剪操作
-                        gif_segment = crop(video, x1=start_x, x2=end_x, y1=0, y2=height)
+                        gif_segment = video.cropped(x1=start_x, x2=end_x, y1=0, y2=height)
                         
                         # 詳細檢查裁剪結果
                         if gif_segment is None:
