@@ -1,4 +1,5 @@
 from moviepy import *
+from moviepy.video.io.VideoFileClip import VideoFileClip
 import selenium.webdriver.edge.options
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtGui import *
@@ -697,7 +698,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                 
                 # 嘗試載入影片，添加超時和錯誤處理
                 try:
-                    video = moviepy.editor.VideoFileClip(self.video_path)
+                    video = VideoFileClip(self.video_path)
                     self.progressBar.setValue(20)
                     self.label_progress.setText("影片載入完成")
                     QtWidgets.QApplication.processEvents()
