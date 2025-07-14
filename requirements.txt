@@ -1,5 +1,11 @@
 PyQt5>=5.15.0
-moviepy>=2.2.1
+moviepy>=1.0.3
 selenium>=4.0.0
-opencv-python>=4.5.0
-Pillow>=8.0.0
+opencv-python>=4.5
+Pillow>=7.0.0
+numpy>=1.18.1 
+imageio>=2.5.0 
+decorator>=4.3.0 
+scipy>=1.3.0 
+pydub>=0.23.0 
+audiofile>=0.0.0
