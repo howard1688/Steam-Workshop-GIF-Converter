@@ -18,8 +18,25 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pyinstaller
 
+      - name: Clean build folders
+        run: |
+          rmdir /s /q build
+          rmdir /s /q dist
+          del SteamVideoClip.spec
+
       - name: Build EXE
-        run: pyinstaller --onefile --windowed --icon=program_icon.ico SteamVideoClip.py --hidden-import=moviepy.editor
+        run: pyinstaller --onefile --windowed --icon=program_icon.ico SteamVideoClip.py \
+                --hidden-import=moviepy.editor \
+                --hidden-import=moviepy.audio \
+                --hidden-import=moviepy.video \
+                --hidden-import=PIL \
+                --hidden-import=selenium.webdriver.edge.options \
+                --hidden-import=selenium.webdriver.common.by \
+                --hidden-import=selenium.webdriver.support.ui \
+                --hidden-import=selenium.common.exceptions \
+                --hidden-import=PyQt5.QtCore \
+                --hidden-import=PyQt5.QtGui \
+                --hidden-import=PyQt5.QtWidgets
 
       - name: Determine next version
         id: tag
@@ -37,6 +54,7 @@ jobs:
           echo "next_tag=$next_tag" >> $GITHUB_ENV
 
       - name: Create Tag
+        shell: bash
         run: |
           git config user.name "${GITHUB_ACTOR}"
           git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
