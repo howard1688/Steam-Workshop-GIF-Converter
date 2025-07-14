@@ -1,4 +1,3 @@
-# from moviepy.editor import VideoFileClip
 import moviepy.editor
 import selenium.webdriver.edge.options
 from PyQt5 import QtCore, QtGui, QtWidgets
