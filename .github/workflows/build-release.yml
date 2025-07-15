@@ -3,12 +3,16 @@ name: Build and Auto Release EXE
 on:
   push:
     branches: [main]
+    paths:
+      - 'SteamVideoClip.py'
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # 需要完整歷史以便取得標籤
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -53,6 +57,22 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.next_tag }}
+          name: "Release ${{ env.next_tag }}"
+          body: |
+            ## 🚀 自動釋出 ${{ env.next_tag }}
+            
+            此版本包含對 `SteamVideoClip.py` 的更新。
+            
+            ### 📥 下載
+            - [SteamVideoClip.exe](https://github.com/${{ github.repository }}/releases/download/${{ env.next_tag }}/SteamVideoClip.exe)
+            
+            ### 🔄 更新內容
+            - 更新主程式檔案
+            - 自動編譯的執行檔
+            
+            > 此釋出由 GitHub Actions 自動生成
           files: dist/SteamVideoClip.exe
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
