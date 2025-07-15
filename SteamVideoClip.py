@@ -7,15 +7,271 @@ from PyQt5.QtCore import *
 import sys
 import cv2
 import os
-from PIL import Image
-from PIL import ImageSequence
 import time
 import traceback
 import re
+import datetime
+from PIL import Image
+from PIL import ImageSequence
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+
+# 定義影片處理執行緒
+class VideoProcessingThread(QThread):
+    # 定義信號
+    progress_updated = pyqtSignal(int, str)  # 進度值, 狀態文字
+    processing_finished = pyqtSignal(bool, str)  # 是否成功, 訊息
+    file_completed = pyqtSignal(int, str, int)  # part編號, 檔案名稱, 檔案大小
+    output_message = pyqtSignal(str)  # 新增：輸出訊息信號
+    
+    def __init__(self, video_path, output_name, start_time, finish_time, fps_value):
+        super().__init__()
+        self.video_path = video_path
+        self.output_name = output_name
+        self.start_time = start_time
+        self.finish_time = finish_time
+        self.fps_value = fps_value
+        self.is_cancelled = False
+        
+    def cancel(self):
+        self.is_cancelled = True
+        
+    def run(self):
+        try:
+            # 檢查檔案大小，提前警告
+            file_size_mb = os.path.getsize(self.video_path) / (1024 * 1024)
+            
+            # 顯示載入訊息
+            self.progress_updated.emit(0, f"正在載入影片檔案 ({file_size_mb:.1f}MB)...")
+            self.output_message.emit(f"[INFO] 開始處理影片: {self.video_path}")
+            self.output_message.emit(f"[INFO] 檔案大小: {file_size_mb:.2f} MB")
+            
+            if self.is_cancelled:
+                return
+                
+            # 載入影片
+            try:
+                self.output_message.emit(f"[INFO] 正在載入 MoviePy VideoFileClip...")
+                video = VideoFileClip(self.video_path)
+                self.progress_updated.emit(20, "影片載入完成")
+                self.output_message.emit(f"[SUCCESS] 影片載入成功")
+            except Exception as load_error:
+                self.output_message.emit(f"[ERROR] 載入影片失敗: {str(load_error)}")
+                self.processing_finished.emit(False, f"無法載入影片檔案：{str(load_error)}")
+                return
+            
+            if self.is_cancelled:
+                video.close()
+                return
+                
+            # 驗證影片基本屬性
+            try:
+                duration = video.duration
+                size = video.size
+                fps = video.fps
+                self.progress_updated.emit(30, f"影片資訊讀取完成 - {duration:.1f}秒, {size}")
+                self.output_message.emit(f"[INFO] 影片時長: {duration:.2f} 秒")
+                self.output_message.emit(f"[INFO] 影片尺寸: {size[0]}x{size[1]}")
+                self.output_message.emit(f"[INFO] 影片幀率: {fps:.2f} fps")
+            except Exception as attr_error:
+                video.close()
+                self.output_message.emit(f"[ERROR] 讀取影片屬性失敗: {str(attr_error)}")
+                self.processing_finished.emit(False, f"影片檔案資訊讀取失敗：{str(attr_error)}")
+                return
+            
+            # 檢查影片長度
+            if video.duration < self.finish_time:
+                video.close()
+                self.output_message.emit(f"[ERROR] 結束時間({self.finish_time}s)超過影片長度({video.duration:.2f}s)")
+                self.processing_finished.emit(False, f"結束時間超過影片長度！影片總長度：{int(video.duration)}秒")
+                return
+            
+            if self.is_cancelled:
+                video.close()
+                return
+                
+            # 裁剪影片時間段
+            self.progress_updated.emit(40, f"正在裁剪時間段: {self.start_time}-{self.finish_time}秒...")
+            self.output_message.emit(f"[INFO] 裁剪時間段: {self.start_time}s - {self.finish_time}s")
+            video = video.subclipped(self.start_time, self.finish_time)
+            self.output_message.emit(f"[SUCCESS] 時間裁剪完成")
+            
+            if self.is_cancelled:
+                video.close()
+                return
+                
+            # 縮放影片尺寸大小
+            self.progress_updated.emit(50, "正在調整影片尺寸...")
+            self.output_message.emit(f"[INFO] 調整影片尺寸至 770x449...")
+            video = video.resized((770,449))
+            self.output_message.emit(f"[SUCCESS] 尺寸調整完成")
+            
+            if self.is_cancelled:
+                video.close()
+                return
+                
+            # 獲取影片寬高
+            width, height = video.size
+            
+            # 計算每個片段寬度
+            segment_width = (width - 20) / 5
+            self.output_message.emit(f"[INFO] 每個片段寬度: {segment_width:.2f} 像素")
+            
+            # 驗證尺寸參數
+            if segment_width <= 0:
+                video.close()
+                self.output_message.emit(f"[ERROR] 影片寬度太小，無法分割成5部分")
+                self.processing_finished.emit(False, "影片寬度太小，無法分割成5部分")
+                return
+            
+            # 開始生成GIF
+            self.progress_updated.emit(60, "開始生成GIF檔案...")
+            
+            for i in range(5):
+                if self.is_cancelled:
+                    video.close()
+                    return
+                    
+                # 更新進度條
+                progress_value = 60 + (i * 6)
+                self.progress_updated.emit(progress_value, f"正在處理 part{i+1} ({i+1}/5)...")
+                
+                # 計算每個 GIF 的起始和結束位置
+                start_x = int(i * segment_width + i * 5)
+                end_x = int(start_x + segment_width)
+                
+                # 確保座標在有效範圍內
+                start_x = max(0, start_x)
+                end_x = min(width, end_x)
+                
+                # 檢查裁剪區域是否有效
+                if end_x <= start_x or end_x - start_x < 10:
+                    continue
+                
+                # 裁剪影片
+                try:
+                    if start_x < 0 or end_x > width or start_x >= end_x:
+                        continue
+                        
+                    # 執行裁剪操作
+                    gif_segment = video.cropped(x1=start_x, x2=end_x, y1=0, y2=height)
+                    
+                    if gif_segment is None:
+                        continue
+                    
+                    # 輸出 GIF 檔案
+                    output_file = f"{self.output_name}_part{i + 1}.gif"
+                    self.output_message.emit(f"[INFO] 開始生成 {output_file}...")
+                    self.output_message.emit(f"[INFO] 裁剪區域: x={start_x}-{end_x}, y=0-{height}")
+                    
+                    # 更新進度到具體的GIF生成階段
+                    gif_progress = 60 + (i * 6) + 3
+                    self.progress_updated.emit(gif_progress, f"正在生成 part{i+1}.gif...")
+                    
+                    if not hasattr(gif_segment, 'write_gif'):
+                        self.output_message.emit(f"[ERROR] gif_segment 沒有 write_gif 方法")
+                        continue
+                    
+                    # 生成 GIF
+                    try:
+                        self.output_message.emit(f"[INFO] 使用 FPS: {self.fps_value}")
+                        gif_segment.write_gif(output_file, fps=self.fps_value, logger=None)
+                        self.output_message.emit(f"[SUCCESS] {output_file} 生成成功 (方法1)")
+                    except Exception as e1:
+                        try:
+                            self.output_message.emit(f"[WARN] 方法1失敗，嘗試方法2: {str(e1)}")
+                            gif_segment.write_gif(output_file, fps=self.fps_value)
+                            self.output_message.emit(f"[SUCCESS] {output_file} 生成成功 (方法2)")
+                        except Exception as e2:
+                            self.output_message.emit(f"[ERROR] 生成 {output_file} 失敗: {str(e2)}")
+                            continue
+                    
+                    # 驗證檔案是否成功建立
+                    if os.path.exists(output_file):
+                        file_size = os.path.getsize(output_file)
+                        if file_size > 0:
+                            self.output_message.emit(f"[SUCCESS] {output_file} 檔案大小: {file_size/1024:.2f} KB")
+                            self.file_completed.emit(i+1, output_file, file_size)
+                        else:
+                            self.output_message.emit(f"[ERROR] {output_file} 檔案大小為 0，刪除檔案")
+                            os.remove(output_file)
+                        
+                except Exception as e:
+                    error_msg = f"處理 part{i+1} 時發生錯誤：{str(e)}"
+                    self.output_message.emit(f"[ERROR] {error_msg}")
+                    print(error_msg)
+                    continue
+            
+            # 關閉影片檔案
+            video.close()
+            
+            if self.is_cancelled:
+                return
+                
+            # 處理檔案大小調整
+            self.progress_updated.emit(90, "正在調整檔案大小...")
+            self._resize_large_files()
+            
+            if self.is_cancelled:
+                return
+                
+            # 修復GIF檔案
+            self.progress_updated.emit(95, "正在修復GIF檔案...")
+            self._fix_gif_trailer()
+            
+            # 完成處理
+            self.progress_updated.emit(100, "處理完成！")
+            self.processing_finished.emit(True, "影片切片處理完成！")
+            
+        except Exception as e:
+            self.processing_finished.emit(False, f"處理影片時發生錯誤：{str(e)}")
+    
+    def _resize_large_files(self):
+        """調整過大的檔案"""
+        max_size = 5 * 1024 * 1024  # 5MB
+        
+        for i in range(1, 6):
+            if self.is_cancelled:
+                return
+                
+            file_path = f"{self.output_name}_part{i}.gif"
+            if os.path.exists(file_path):
+                file_size = os.path.getsize(file_path)
+                if file_size > max_size:
+                    try:
+                        im = Image.open(file_path)
+                        original_width, original_height = im.size
+                        scale_factor = (max_size / file_size) ** 0.5
+                        new_width = int(original_width * scale_factor * 0.85)
+                        new_height = int(original_height * scale_factor * 0.85)
+
+                        resize_frames = [frame.resize((new_width, new_height)) for frame in ImageSequence.Iterator(im)]
+                        resize_frames[0].save(file_path, save_all=True, append_images=resize_frames[1:])
+                        im.close()
+                    except Exception:
+                        pass
+    
+    def _fix_gif_trailer(self):
+        """修復GIF檔案結尾"""
+        for i in range(1, 6):
+            if self.is_cancelled:
+                return
+                
+            path = f"{self.output_name}_part{i}.gif"
+            try:
+                if os.path.exists(path):
+                    with open(path, 'rb') as f:
+                        gif_data = bytearray(f.read())
+                    
+                    if len(gif_data) >= 2:
+                        gif_data[-1] = 0x21
+                        
+                        with open(path, 'wb') as f:
+                            f.write(gif_data)
+            except Exception:
+                pass
 
 class Ui_MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
@@ -31,6 +287,10 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.start_time = 0
         self.finish_time = 0
         self.video_fps = 0
+        
+        # 執行緒相關
+        self.processing_thread = None
+        self.is_processing = False
 
     def setupUi(self, MainWindow):
         MainWindow.setObjectName("MainWindow")
@@ -350,24 +610,55 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.checkBox_part5.setObjectName("checkBox_part5")
         self.horizontalLayout_upload.addWidget(self.checkBox_part5)
         
-        # 調整主視窗大小以容納新增元素
-        MainWindow.resize(505, 580)
-        MainWindow.setMinimumSize(QtCore.QSize(505, 580))
-        MainWindow.setMaximumSize(QtCore.QSize(505, 580))
+        # 調整主視窗大小以容納新增元素（移除label_progress後調整）
+        MainWindow.resize(505, 695)
+        MainWindow.setMinimumSize(QtCore.QSize(505, 695))
+        MainWindow.setMaximumSize(QtCore.QSize(505, 695))
         
         # 新增進度條
         self.progressBar = QtWidgets.QProgressBar(self.centralwidget)
         self.progressBar.setGeometry(QtCore.QRect(10, 510, 481, 25))
         self.progressBar.setObjectName("progressBar")
-        self.progressBar.setVisible(False)  # 初始隱藏
+        self.progressBar.setVisible(True)  # 初始顯示
+        self.progressBar.setValue(0)  # 初始值為0
+        self.progressBar.setMaximum(100)  # 設定最大值
+        self.progressBar.setFormat("🚀 Steam Workshop GIF Converter  - 請選擇影片檔案開始")  # 設定初始訊息
         
-        # 進度標籤
-        self.label_progress = QtWidgets.QLabel(self.centralwidget)
-        self.label_progress.setGeometry(QtCore.QRect(10, 540, 481, 20))
-        self.label_progress.setObjectName("label_progress")
-        self.label_progress.setText("準備中...")
-        self.label_progress.setAlignment(QtCore.Qt.AlignCenter)
-        self.label_progress.setVisible(False)  # 初始隱藏
+        # 移除進度標籤（不再需要）
+        # self.label_progress = QtWidgets.QLabel(self.centralwidget)
+        # self.label_progress.setGeometry(QtCore.QRect(10, 540, 481, 20))
+        # self.label_progress.setObjectName("label_progress")
+        # self.label_progress.setText("等待開始...")
+        # self.label_progress.setAlignment(QtCore.Qt.AlignCenter)
+        # self.label_progress.setVisible(True)  # 初始顯示
+        
+        # 新增 CMD 輸出顯示區域
+        self.textEdit_output = QtWidgets.QTextEdit(self.centralwidget)
+        self.textEdit_output.setGeometry(QtCore.QRect(10, 545, 401, 120))  # 向上移動25像素
+        self.textEdit_output.setObjectName("textEdit_output")
+        self.textEdit_output.setVisible(False)  # 初始隱藏
+        self.textEdit_output.setReadOnly(True)  # 設為唯讀
+        font = QtGui.QFont("Consolas", 9)  # 使用等寬字體便於顯示 cmd 輸出
+        self.textEdit_output.setFont(font)
+        self.textEdit_output.setPlaceholderText("處理輸出將顯示在這裡...")
+        
+        # 設置文字編輯器樣式
+        self.textEdit_output.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #ffffff;
+                border: 1px solid #555555;
+                font-family: 'Consolas', 'Monaco', monospace;
+            }
+        """)
+        
+        # 新增清空輸出按鈕
+        self.pushButton_clear_output = QtWidgets.QPushButton(self.centralwidget)
+        self.pushButton_clear_output.setGeometry(QtCore.QRect(420, 545, 71, 30))  # 向上移動25像素
+        self.pushButton_clear_output.setObjectName("pushButton_clear_output")
+        self.pushButton_clear_output.setText("清空輸出")
+        self.pushButton_clear_output.setVisible(False)  # 初始隱藏
+        self.pushButton_clear_output.clicked.connect(self.clear_output)
         
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(MainWindow)
@@ -383,7 +674,7 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
-        MainWindow.setWindowTitle(_translate("MainWindow", "MainWindow"))
+        MainWindow.setWindowTitle(_translate("MainWindow", "Steam Workshop GIF Converter"))
         self.label_5.setText(_translate("MainWindow", "影片路徑："))
         self.toolButtonInput.setText(_translate("MainWindow", "..."))
         self.pushButton.setText(_translate("MainWindow", "切片"))
@@ -411,7 +702,8 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.checkBox_part5.setText(_translate("MainWindow", "5"))
 
     def init_slots(self):
-        self.pushButton.clicked.connect(self.split_video_to_gifs)  # 連接切片函數
+        print("初始化按鈕連接...")  # 除錯訊息
+        self.pushButton.clicked.connect(self.toggle_processing)  # 連接切片/取消函數
         self.time_start.textChanged.connect(self.read_time_start)
         self.time_start_2.textChanged.connect(self.read_time_start)
         self.time_finish.textChanged.connect(self.read_time_finish)
@@ -421,11 +713,16 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         # self.toolButtonOutput.clicked.connect(self.SaveResults)
         self.pushButton_2.clicked.connect(self.close)
         self.pushButton_fixgif.clicked.connect(self.fix_gif_trailer)
-        pix = QPixmap('template_1.png')        # 設置label圖片
-        self.label_template.setPixmap(pix)
-        self.label_template.setScaledContents(True)  # 自適應QLabel大小
+        print("按鈕連接完成！")  # 除錯訊息
+        
+        # 設置 label 顯示五個方框的預覽圖
+        self.setup_preview_boxes()
+            
         self.output_name.setPlainText("output_gif")
-        self.workshop_name.setText('gif') # 設置上傳名稱
+        self.workshop_name.setPlainText('gif') # 設置上傳名稱
+        
+        # 移除啟動歡迎訊息，改為在進度條顯示
+        # self.show_startup_message()
 
         self.checkBox.setChecked(True)
         self.checkBox.clicked.connect(self.check_video_play)
@@ -439,7 +736,13 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
         self.checkBox_part5.clicked.connect(self.on_part_checkbox_clicked)
 
     def InpurDir(self):
+        print("InpurDir 方法被調用了！")  # 除錯訊息
         try:
+            # 更新進度條為載入狀態
+            self.progressBar.setValue(10)
+            self.progressBar.setFormat("正在選擇影片檔案...")
+            QtWidgets.QApplication.processEvents()
+            
             video_type = [".mp4", ".mkv", ".MOV", ".avi", ".m4v"]
             file_dialog = QtWidgets.QFileDialog.getOpenFileName(
                 self, 
@@ -448,23 +751,38 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                 "影片檔案 (*.mp4 *.mkv *.MOV *.avi *.m4v);;所有檔案(*.*)"
             )
             self.video_path = file_dialog[0]
+            print(f"選擇的檔案路徑：{self.video_path}")  # 除錯訊息
 
             # 檢查是否選擇了檔案
             if not self.video_path:
+                self.progressBar.setValue(0)
+                self.progressBar.setFormat("🚀 Steam Workshop GIF Converter  - 請選擇影片檔案開始")
                 return
 
             # 檢查檔案是否存在
+            self.progressBar.setValue(20)
+            self.progressBar.setFormat("📁 驗證檔案...")
+            QtWidgets.QApplication.processEvents()
+            
             if not os.path.exists(self.video_path):
                 QtWidgets.QMessageBox.warning(self, "錯誤", "檔案不存在", QtWidgets.QMessageBox.Yes)
+                self.progressBar.setValue(0)
+                self.progressBar.setFormat("🚀 Steam Workshop GIF Converter  - 請選擇影片檔案開始")
                 return
 
             # 檢查檔案大小
             file_size = os.path.getsize(self.video_path)
             if file_size == 0:
                 QtWidgets.QMessageBox.warning(self, "錯誤", "檔案內容為空檔案", QtWidgets.QMessageBox.Yes)
+                self.progressBar.setValue(0)
+                self.progressBar.setFormat("🚀 Steam Workshop GIF Converter  - 請選擇影片檔案開始")
                 return
 
             # 判斷是否為支援的影片格式
+            self.progressBar.setValue(30)
+            self.progressBar.setFormat("🔍 檢查檔案格式...")
+            QtWidgets.QApplication.processEvents()
+            
             is_supported = False
             for vdi in video_type:
                 if vdi.lower() in self.video_path.lower():
@@ -475,6 +793,8 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.warning(self, "格式錯誤", 
                     f"不支援該格式！\n支援格式：{', '.join(video_type)}", 
                     QtWidgets.QMessageBox.Yes)
+                self.progressBar.setValue(0)
+                self.progressBar.setFormat("🚀 Steam Workshop GIF Converter  - 請選擇影片檔案開始")
                 return
 
             print("選擇輸入影片路徑", self.video_path)
@@ -482,24 +802,38 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             print("videoIsOpen")
 
             # 計算影片長度,並設置滑動軸中時間
+            self.progressBar.setValue(50)
+            self.progressBar.setFormat("📊 分析影片資訊...")
+            QtWidgets.QApplication.processEvents()
+            
             try:
                 duration = self.get_video_duration()
                 if duration <= 0:
                     QtWidgets.QMessageBox.warning(self, "錯誤", "無法讀取影片時長，請檢查影片檔案", QtWidgets.QMessageBox.Yes)
+                    self.progressBar.setValue(0)
+                    self.progressBar.setFormat("🚀 Steam Workshop GIF Converter  - 請選擇影片檔案開始")
                     return
                     
-                self.time_start.setText("00")
-                self.time_start_2.setText("00")
+                self.progressBar.setValue(70)
+                self.progressBar.setFormat("⚙️ 設定時間參數...")
+                QtWidgets.QApplication.processEvents()
+                
+                self.time_start.setPlainText("00")
+                self.time_start_2.setPlainText("00")
                 if duration < 15:
                     self.finish_time = duration
-                    self.time_finish.setText("00")
-                    self.time_finish_2.setText(str(duration))
+                    self.time_finish.setPlainText("00")
+                    self.time_finish_2.setPlainText(str(duration))
                 else:
                     self.finish_time = 10
-                    self.time_finish.setText("00")
-                    self.time_finish_2.setText("10")
+                    self.time_finish.setPlainText("00")
+                    self.time_finish_2.setPlainText("10")
 
                 # 嘗試開啟影片預覽
+                self.progressBar.setValue(90)
+                self.progressBar.setFormat("🎬 初始化影片預覽...")
+                QtWidgets.QApplication.processEvents()
+                
                 if self.cap.isOpened():
                     self.cap.release()
                 
@@ -507,9 +841,18 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
                 if not self.cap.isOpened():
                     QtWidgets.QMessageBox.warning(self, "警告", "無法開啟影片預覽，但可以繼續處理", QtWidgets.QMessageBox.Yes)
                 else:
-                    self.timer.start(30)   # 設置影片播放計時器                    
+                    self.timer.start(30)   # 設置影片播放計時器
+                
+                # 載入完成
+                self.progressBar.setValue(100)
+                self.progressBar.setFormat(f"✅ 影片載入完成！({duration:.1f}秒) - 可開始製作GIF")
+                
+                # 移除CMD輸出訊息，狀態直接顯示在進度條上
+                                    
             except Exception as e:
                 QtWidgets.QMessageBox.warning(self, "錯誤", f"讀取影片時發生錯誤：{str(e)}", QtWidgets.QMessageBox.Yes)
+                self.progressBar.setValue(0)
+                self.progressBar.setFormat("🚀 Steam Workshop GIF Converter  - 請選擇影片檔案開始")
                 return
                 
         except Exception as e:
@@ -548,10 +891,46 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
 
             pixmap = QImage(cur_frame, width, height, QImage.Format_RGB888)
             pixmap = QPixmap.fromImage(pixmap)
+            
+            # 在影片上繪製分割線
+            pixmap = self.draw_division_lines(pixmap)
+            
             self.label.setScaledContents(True)
             # 影片流置於label中間播放
             self.label.setAlignment(Qt.AlignCenter)
             self.label.setPixmap(pixmap)
+
+    def draw_division_lines(self, pixmap):
+        """在影片幀上繪製黑色分割線"""
+        # 複製 pixmap 以免修改原始數據
+        pixmap_with_lines = pixmap.copy()
+        
+        # 獲取影片預覽區域的尺寸
+        width = pixmap_with_lines.width()
+        height = pixmap_with_lines.height()
+        
+        # 根據影片寬度動態計算線條粗細（調整為更細的線條）
+        line_width = max(3, int(width * 0.006))  # 最少1像素，更細的線條
+
+        painter = QPainter(pixmap_with_lines)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # 設置動態粗細的黑色畫筆
+        pen = QPen(Qt.black, line_width, Qt.SolidLine)
+        pen.setCapStyle(Qt.RoundCap)  # 設置圓形線條端點
+        painter.setPen(pen)
+        
+        # 計算分割線的位置（將寬度分成5等份）
+        segment_width = width / 5
+        
+        # 繪製4條分割線（分成5部分需要4條線）
+        for i in range(1, 5):
+            x = int(i * segment_width)
+            painter.drawLine(x, 0, x, height)
+        
+        painter.end()
+        
+        return pixmap_with_lines
 
     def read_time_start(self):
         try:
@@ -612,364 +991,8 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             print(f"read_time_finish error: {e}")
 
     def split_video_to_gifs(self):
-        try:
-            # 檢查是否已選擇影片
-            if not self.video_path or not os.path.exists(self.video_path):
-                QtWidgets.QMessageBox.warning(self, "錯誤", "請先選擇有效的影片檔案", QtWidgets.QMessageBox.Yes)
-                return
-            
-            # 檢查輸出名稱是否為空
-            output_name = self.output_name.toPlainText().strip()
-            if not output_name:
-                QtWidgets.QMessageBox.warning(self, "錯誤", "請輸入輸出檔案名稱", QtWidgets.QMessageBox.Yes)
-                return
-            
-            # 檢查檔案名稱是否包含非法字符
-            invalid_chars = '<>:"/\\|?*'
-            if any(char in output_name for char in invalid_chars):
-                QtWidgets.QMessageBox.warning(self, "錯誤", f"檔案名稱不能包含以下字符：{invalid_chars}", QtWidgets.QMessageBox.Yes)
-                return
-            
-            # 驗證時間輸入
-            try:
-                start_min = int(self.time_start.toPlainText() or "0")
-                start_sec = int(self.time_start_2.toPlainText() or "0")
-                finish_min = int(self.time_finish.toPlainText() or "0")
-                finish_sec = int(self.time_finish_2.toPlainText() or "0")
-            except ValueError:
-                QtWidgets.QMessageBox.warning(self, "錯誤", "時間必須為數字", QtWidgets.QMessageBox.Yes)
-                return
-            
-            #計算時間
-            self.start_time = start_min * 60 + start_sec
-            self.finish_time = finish_min * 60 + finish_sec
-            
-            # 檢查時間邏輯
-            if self.start_time >= self.finish_time:
-                QtWidgets.QMessageBox.warning(self, "錯誤", "結束時間必須大於開始時間", QtWidgets.QMessageBox.Yes)
-                return
-            
-            if self.finish_time - self.start_time < 1:
-                QtWidgets.QMessageBox.warning(self, "錯誤", "影片片段至少1秒", QtWidgets.QMessageBox.Yes)
-                return
-            
-            # 檢查FPS輸入
-            try:
-                fps_value = int(self.fps_input.toPlainText() or "10")
-                if fps_value <= 0 or fps_value > 60:
-                    fps_value = 10
-                    self.fps_input.setPlainText("10")
-                    QtWidgets.QMessageBox.warning(self, "FPS警告", "FPS值無效，已重新設為10", QtWidgets.QMessageBox.Yes)
-            except ValueError:
-                fps_value = 10
-                self.fps_input.setPlainText("10")
-                QtWidgets.QMessageBox.warning(self, "FPS錯誤", "FPS必須為數字，已重新設為10", QtWidgets.QMessageBox.Yes)
-
-            # 開始處理影片
-            print("開始處理影片...")
-            
-            # 檢查檔案大小，提前警告
-            file_size_mb = os.path.getsize(self.video_path) / (1024 * 1024)
-            print(f"影片檔案大小: {file_size_mb:.1f}MB")
-            
-            if file_size_mb > 50:  # 超過50MB
-                reply = QtWidgets.QMessageBox.question(self, "大檔案提醒", 
-                    f"影片檔案較大 ({file_size_mb:.1f}MB)，載入可能需要 10-30 秒。\n"
-                    f"建議:\n"
-                    f"• 縮短處理時間（如改為0-5秒）\n" 
-                    f"• 或耐心等待載入完成\n\n"
-                    f"是否繼續處理？", 
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-                if reply == QtWidgets.QMessageBox.No:
-                    return
-            
-            # 顯示進度條
-            self.progressBar.setVisible(True)
-            self.label_progress.setVisible(True)
-            self.progressBar.setValue(0)
-            self.progressBar.setMaximum(100)
-            self.label_progress.setText(f"正在載入影片檔案 ({file_size_mb:.1f}MB)...")
-            QtWidgets.QApplication.processEvents()  # 更新UI
-            
-            try:
-                # 讀取影片檔案
-                print(f"載入影片: {self.video_path}")
-                
-                # 嘗試載入影片，添加超時和錯誤處理
-                try:
-                    video = VideoFileClip(self.video_path)
-                    self.progressBar.setValue(20)
-                    self.label_progress.setText("影片載入完成")
-                    QtWidgets.QApplication.processEvents()
-                except Exception as load_error:
-                    self.progressBar.setVisible(False)
-                    self.label_progress.setVisible(False)
-                    QtWidgets.QMessageBox.critical(self, "載入錯誤", 
-                        f"無法載入影片檔案，可能的原因：\n"
-                        f"1. 影片格式不支援\n"
-                        f"2. 檔案損壞\n"
-                        f"3. 編碼器問題\n"
-                        f"4. 檔案太大，記憶體不足\n\n"
-                        f"詳細錯誤：{str(load_error)}", 
-                        QtWidgets.QMessageBox.Yes)
-                    return
-                
-                # 檢查影片是否成功載入
-                if video is None:
-                    self.progressBar.setVisible(False)
-                    self.label_progress.setVisible(False)
-                    QtWidgets.QMessageBox.warning(self, "錯誤", "無法載入影片檔案", QtWidgets.QMessageBox.Yes)
-                    return
-                
-                # 驗證影片基本屬性
-                try:
-                    duration = video.duration
-                    size = video.size
-                    fps = video.fps
-                    print(f"影片載入成功，時長: {duration}秒, 尺寸: {size}, FPS: {fps}")
-                    self.progressBar.setValue(30)
-                    self.label_progress.setText(f"影片資訊讀取完成 - {duration:.1f}秒, {size}")
-                    QtWidgets.QApplication.processEvents()
-                except Exception as attr_error:
-                    video.close()
-                    self.progressBar.setVisible(False)
-                    self.label_progress.setVisible(False)
-                    QtWidgets.QMessageBox.warning(self, "錯誤", 
-                        f"影片檔案資訊讀取失敗：{str(attr_error)}", 
-                        QtWidgets.QMessageBox.Yes)
-                    return
-                
-                # 檢查影片長度
-                if video.duration < self.finish_time:
-                    video.close()
-                    self.progressBar.setVisible(False)
-                    self.label_progress.setVisible(False)
-                    QtWidgets.QMessageBox.warning(self, "錯誤", f"結束時間超過影片長度！影片總長度：{int(video.duration)}秒", QtWidgets.QMessageBox.Yes)
-                    return
-                
-                # 裁剪影片時間段
-                print(f"裁剪影片時間段: {self.start_time}秒 到 {self.finish_time}秒")
-                self.progressBar.setValue(40)
-                self.label_progress.setText(f"正在裁剪時間段: {self.start_time}-{self.finish_time}秒...")
-                QtWidgets.QApplication.processEvents()
-                video = video.subclipped(self.start_time, self.finish_time)
-                if video is None:
-                    self.progressBar.setVisible(False)
-                    self.label_progress.setVisible(False)
-                    QtWidgets.QMessageBox.warning(self, "錯誤", "影片時間裁剪失敗", QtWidgets.QMessageBox.Yes)
-                    return
-
-                # 縮放影片尺寸大小
-                print("調整影片尺寸...")
-                self.progressBar.setValue(50)
-                self.label_progress.setText("正在調整影片尺寸...")
-                QtWidgets.QApplication.processEvents()
-                video = video.resized((770,449))
-                if video is None:
-                    self.progressBar.setVisible(False)
-                    self.label_progress.setVisible(False)
-                    QtWidgets.QMessageBox.warning(self, "錯誤", "影片尺寸調整失敗", QtWidgets.QMessageBox.Yes)
-                    return
-
-                # 獲取影片寬高
-                width, height = video.size
-                print(f"調整後尺寸: {width}x{height}")
-
-                # 計算每個片段寬度（去除邊距後平均分配）
-                segment_width = (width - 20) / 5
-                print(f"每個片段寬度: {segment_width}")
-                
-                # 驗證尺寸參數
-                if segment_width <= 0:
-                    self.progressBar.setVisible(False)
-                    self.label_progress.setVisible(False)
-                    QtWidgets.QMessageBox.warning(self, "錯誤", "影片寬度太小，無法分割成5部分", QtWidgets.QMessageBox.Yes)
-                    video.close()
-                    return
-
-                # 開始生成GIF
-                self.progressBar.setValue(60)
-                self.label_progress.setText("開始生成GIF檔案...")
-                QtWidgets.QApplication.processEvents()
-
-                for i in range(5):
-                    print(f"正在處理第{i+1} 片段..")
-                    
-                    # 更新進度條 (60-90之間，每個片段佔6%)
-                    progress_value = 60 + (i * 6)
-                    self.progressBar.setValue(progress_value)
-                    self.label_progress.setText(f"正在處理 part{i+1} ({i+1}/5)...")
-                    QtWidgets.QApplication.processEvents()
-                    
-                    # 計算每個 GIF 的起始和結束位置
-                    start_x = int(i * segment_width + i * 5)
-                    end_x = int(start_x + segment_width)
-                    
-                    # 確保座標在有效範圍內
-                    start_x = max(0, start_x)
-                    end_x = min(width, end_x)
-                    
-                    # 檢查裁剪區域是否有效
-                    if end_x <= start_x:
-                        print(f"警告：part{i+1} 座標無效 (start_x={start_x}, end_x={end_x})，跳過此片段")
-                        continue
-                        
-                    if end_x - start_x < 10:  # 最小寬度檢查
-                        print(f"警告：part{i+1} 寬度太小 ({end_x - start_x}px)，跳過此片段")
-                        continue
-                    
-                    print(f"Part{i+1} 裁剪範圍: x={start_x} 到 {end_x} (寬度: {end_x - start_x}px)")
-
-                    # 裁剪影片
-                    try:
-                        print(f"開始裁剪 part{i+1}...")
-                        print(f"  影片尺寸: {width}x{height}")
-                        print(f"  裁剪座標: x1={start_x}, x2={end_x}, y1=0, y2={height}")
-                        
-                        # 再次驗證座標
-                        if start_x < 0 or end_x > width or start_x >= end_x:
-                            print(f"錯誤：part{i+1} 座標參數無效")
-                            continue
-                            
-                        # 執行裁剪操作
-                        gif_segment = video.cropped(x1=start_x, x2=end_x, y1=0, y2=height)
-                        
-                        # 詳細檢查裁剪結果
-                        if gif_segment is None:
-                            print(f"錯誤：part{i+1} 裁剪返回 None")
-                            print("  可能原因：")
-                            print("  1. MoviePy 版本相容性問題")
-                            print("  2. 影片編碼格式問題")
-                            print("  3. 記憶體不足")
-                            continue
-                            
-                        # 檢查裁剪後的影片屬性
-                        try:
-                            segment_size = gif_segment.size
-                            segment_duration = gif_segment.duration
-                            print(f"Part{i+1} 裁剪成功，尺寸: {segment_size}, 時長: {segment_duration}秒")
-                        except Exception as attr_error:
-                            print(f"錯誤：part{i+1} 裁剪後屬性讀取失敗：{str(attr_error)}")
-                            continue
-
-                        # 輸出 GIF 檔案
-                        output_file = f"{output_name}_part{i + 1}.gif"
-                        print(f"正在輸出 {output_file}...")
-                        
-                        # 更新進度條到具體的GIF生成階段
-                        gif_progress = 60 + (i * 6) + 3  # 每個GIF中間階段
-                        self.progressBar.setValue(gif_progress)
-                        self.label_progress.setText(f"正在生成 part{i+1}.gif...")
-                        QtWidgets.QApplication.processEvents()
-                        
-                        # 檢查 write_gif 方法是否存在
-                        if not hasattr(gif_segment, 'write_gif'):
-                            print(f"錯誤：part{i+1} 物件沒有 write_gif 方法")
-                            continue
-                            continue
-                        
-                        # 使用更安全的 GIF 輸出參數
-                        try:
-                            gif_segment.write_gif(output_file, fps=fps_value, logger=None)
-                        except Exception as gif_error:
-                            print(f"GIF輸出失敗，嘗試備用方法：{str(gif_error)}")
-                            # 嘗試使用預設參數
-                            try:
-                                gif_segment.write_gif(output_file, fps=fps_value)
-                            except Exception as gif_error2:
-                                print(f"part{i+1} GIF輸出完全失敗：{str(gif_error2)}")
-                                continue
-                        
-                        # 驗證檔案是否成功建立
-                        if os.path.exists(output_file):
-                            file_size = os.path.getsize(output_file)
-                            if file_size > 0:
-                                print(f"Part{i+1} 完成 - 檔案大小: {file_size/1024:.1f}KB")
-                            else:
-                                print(f"警告：part{i+1} 檔案大小為0")
-                                os.remove(output_file)  # 刪除空檔案
-                        else:
-                            print(f"警告：part{i+1} 檔案建立失敗")
-                            
-                    except Exception as e:
-                        print(f"處理 part{i+1} 時發生錯誤：{str(e)}")
-                        print(f"錯誤詳情：{traceback.format_exc()}")
-                        continue
-                        
-            except Exception as e:
-                QtWidgets.QMessageBox.critical(self, "影片處理錯誤", f"讀取或處理影片時發生錯誤：{str(e)}", QtWidgets.QMessageBox.Yes)
-                return
-
-            # 關閉影片檔案
-            video.close()
-            print("處理完成")
-
-            # 更新進度到90%
-            self.progressBar.setValue(90)
-            self.label_progress.setText("正在調整檔案大小...")
-            QtWidgets.QApplication.processEvents()
-
-            max_size = 5 * 1024 * 1024  # 5MB in bytes
-
-            # 檢查檔案大小如果過大進行縮小
-            files_to_resize = []
-            for i in range(1, 6):
-                file_path = f"{output_name}_part{i}.gif"
-                if os.path.exists(file_path):
-                    file_size = os.path.getsize(file_path)
-                    if file_size > max_size:
-                        files_to_resize.append((i, file_size))
-                        print(f"檔案 part{i} 大小：{file_size/1024/1024:.2f}MB，需要調整")
-
-            if files_to_resize:
-                print("開始調整檔案大小...")
-                for idx, (i, file_size) in enumerate(files_to_resize):
-                    resize_progress = 90 + (idx * 2)  # 90-94%之間
-                    self.progressBar.setValue(resize_progress)
-                    self.label_progress.setText(f"正在調整 part{i} 檔案大小...")
-                    QtWidgets.QApplication.processEvents()
-                    
-                    try:
-                        im = Image.open(f"{output_name}_part{i}.gif")
-                        # 計算縮放比例
-                        original_width, original_height = im.size
-                        scale_factor = (max_size / file_size) ** 0.5
-                        new_width = int(original_width * scale_factor * 0.85)
-                        new_height = int(original_height * scale_factor * 0.85)
-
-                        resize_frames = [frame.resize((new_width, new_height)) for frame in ImageSequence.Iterator(im)]
-                        resize_frames[0].save(f"{output_name}_part{i}.gif", save_all=True, append_images=resize_frames[1:])
-                        print(f"Part{i} 調整完成!")
-                        im.close()
-                    except Exception as e:
-                        print(f"調整 part{i} 時發生錯誤：{e}")
-            else:
-                print("所有檔案大小都符合要求")
-
-            # 修改最後一個字節為21
-            self.progressBar.setValue(95)
-            self.label_progress.setText("正在修復GIF檔案...")
-            QtWidgets.QApplication.processEvents()
-            self.fix_gif_trailer()
-
-            # 完成處理
-            self.progressBar.setValue(100)
-            self.label_progress.setText("處理完成！")
-            QtWidgets.QApplication.processEvents()
-            
-            # 3秒後隱藏進度條
-            QtCore.QTimer.singleShot(3000, lambda: (
-                self.progressBar.setVisible(False),
-                self.label_progress.setVisible(False)
-            ))
-            
-            QtWidgets.QMessageBox.information(self, "完成", "影片切片處理完成！", QtWidgets.QMessageBox.Yes)
-            
-        except Exception as e:
-            self.progressBar.setVisible(False)
-            self.label_progress.setVisible(False)
-            QtWidgets.QMessageBox.critical(self, "處理錯誤", f"處理影片時發生錯誤：{str(e)}", QtWidgets.QMessageBox.Yes)
-            print(f"split_video_to_gifs error: {traceback.format_exc()}")
+        """舊版本相容性 - 重導向到新的執行緒版本"""
+        self.toggle_processing()
     
     def fix_gif_trailer(self):
         try:
@@ -1238,6 +1261,13 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event):
         """程式關閉時清理工作"""
         try:
+            # 取消正在進行的處理
+            if self.is_processing and self.processing_thread:
+                self.processing_thread.cancel()
+                self.processing_thread.wait(3000)  # 等待最多3秒
+                if self.processing_thread.isRunning():
+                    self.processing_thread.terminate()
+                    
             # 停止計時器
             if hasattr(self, 'timer') and self.timer.isActive():
                 self.timer.stop()
@@ -1252,22 +1282,220 @@ class Ui_MainWindow(QtWidgets.QMainWindow):
             print(f"關閉程式時發生錯誤：{e}")
             event.accept()
 
-#output_gif_prefix = "output_gif"  # 輸出 GIF 檔案前綴
-# split_video_to_gifs(input_video, output_gif_prefix)
+    def toggle_processing(self):
+        """切換處理狀態（開始/取消）"""
+        print("toggle_processing 方法被調用了！")  # 除錯訊息
+        if not self.is_processing:
+            print("開始處理...")  # 除錯訊息
+            self.start_processing()
+        else:
+            print("取消處理...")  # 除錯訊息
+            self.cancel_processing()
+    
+    def start_processing(self):
+        """開始影片處理"""
+        # 檢查是否已選擇影片
+        if not self.video_path or not os.path.exists(self.video_path):
+            QtWidgets.QMessageBox.warning(self, "錯誤", "請先選擇有效的影片檔案", QtWidgets.QMessageBox.Yes)
+            return
+        
+        # 檢查輸出名稱是否為空
+        output_name = self.output_name.toPlainText().strip()
+        if not output_name:
+            QtWidgets.QMessageBox.warning(self, "錯誤", "請輸入輸出檔案名稱", QtWidgets.QMessageBox.Yes)
+            return
+        
+        # 檢查檔案名稱是否包含非法字符
+        invalid_chars = '<>:"/\\|?*'
+        if any(char in output_name for char in invalid_chars):
+            QtWidgets.QMessageBox.warning(self, "錯誤", f"檔案名稱不能包含以下字符：{invalid_chars}", QtWidgets.QMessageBox.Yes)
+            return
+        
+        # 驗證時間輸入
+        try:
+            start_min = int(self.time_start.toPlainText() or "0")
+            start_sec = int(self.time_start_2.toPlainText() or "0")
+            finish_min = int(self.time_finish.toPlainText() or "0")
+            finish_sec = int(self.time_finish_2.toPlainText() or "0")
+        except ValueError:
+            QtWidgets.QMessageBox.warning(self, "錯誤", "時間必須為數字", QtWidgets.QMessageBox.Yes)
+            return
+        
+        # 計算時間
+        self.start_time = start_min * 60 + start_sec
+        self.finish_time = finish_min * 60 + finish_sec
+        
+        # 檢查時間邏輯
+        if self.start_time >= self.finish_time:
+            QtWidgets.QMessageBox.warning(self, "錯誤", "結束時間必須大於開始時間", QtWidgets.QMessageBox.Yes)
+            return
+        
+        if self.finish_time - self.start_time < 1:
+            QtWidgets.QMessageBox.warning(self, "錯誤", "影片片段至少1秒", QtWidgets.QMessageBox.Yes)
+            return
+        
+        # 檢查FPS輸入
+        try:
+            fps_value = int(self.fps_input.toPlainText() or "10")
+            if fps_value <= 0 or fps_value > 60:
+                fps_value = 10
+                self.fps_input.setPlainText("10")
+                QtWidgets.QMessageBox.warning(self, "FPS警告", "FPS值無效，已重新設為10", QtWidgets.QMessageBox.Yes)
+        except ValueError:
+            fps_value = 10
+            self.fps_input.setPlainText("10")
+            QtWidgets.QMessageBox.warning(self, "FPS錯誤", "FPS必須為數字，已重新設為10", QtWidgets.QMessageBox.Yes)
+
+        # 檢查檔案大小，提前警告
+        file_size_mb = os.path.getsize(self.video_path) / (1024 * 1024)
+        
+        if file_size_mb > 50:  # 超過50MB
+            reply = QtWidgets.QMessageBox.question(self, "大檔案提醒", 
+                f"影片檔案較大 ({file_size_mb:.1f}MB)，載入可能需要 10-30 秒。\n"
+                f"建議:\n"
+                f"• 縮短處理時間（如改為0-5秒）\n" 
+                f"• 或耐心等待載入完成\n\n"
+                f"是否繼續處理？", 
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            if reply == QtWidgets.QMessageBox.No:
+                return
+
+        # 設定處理狀態
+        self.is_processing = True
+        self.pushButton.setText("取消")
+        self.pushButton.setStyleSheet("background-color: #ff6b6b; color: white;")
+        
+        # 設定進度條和輸出區域
+        self.progressBar.setFormat("🚀 開始處理...")
+        self.textEdit_output.setVisible(True)  # 顯示輸出區域
+        self.pushButton_clear_output.setVisible(True)  # 顯示清空按鈕
+        self.progressBar.setValue(0)
+        
+        # 清空輸出區域
+        self.textEdit_output.clear()
+        self.textEdit_output.append("[START] 開始影片處理...")
+        
+        # 禁用其他控制項
+        self.toolButtonInput.setEnabled(False)
+        self.pushButton_fixgif.setEnabled(False)
+        self.pushButton_3.setEnabled(False)
+        
+        # 建立並啟動處理執行緒
+        self.processing_thread = VideoProcessingThread(
+            self.video_path, output_name, self.start_time, self.finish_time, fps_value
+        )
+        
+        # 連接信號
+        self.processing_thread.progress_updated.connect(self.on_progress_updated)
+        self.processing_thread.processing_finished.connect(self.on_processing_finished)
+        self.processing_thread.file_completed.connect(self.on_file_completed)
+        self.processing_thread.output_message.connect(self.on_output_message)  # 連接新的輸出信號
+        
+        # 啟動執行緒
+        self.processing_thread.start()
+    
+    def cancel_processing(self):
+        """取消影片處理"""
+        if self.processing_thread and self.processing_thread.isRunning():
+            self.processing_thread.cancel()
+            self.processing_thread.wait(5000)  # 等待最多5秒
+            
+            if self.processing_thread.isRunning():
+                self.processing_thread.terminate()
+                self.processing_thread.wait()
+        
+        self.on_processing_finished(False, "處理已取消")
+    
+    def on_progress_updated(self, value, message):
+        """更新進度條"""
+        self.progressBar.setValue(value)
+        self.progressBar.setFormat(message)
+    
+    def on_output_message(self, message):
+        """處理輸出訊息"""
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {message}"
+        self.textEdit_output.append(formatted_message)
+        
+        # 自動捲動到最新訊息
+        cursor = self.textEdit_output.textCursor()
+        cursor.movePosition(cursor.End)
+        self.textEdit_output.setTextCursor(cursor)
+        
+        # 強制更新UI
+        QtWidgets.QApplication.processEvents()
+    
+    def on_file_completed(self, part_num, filename, file_size):
+        """檔案完成處理"""
+        message = f"Part{part_num} 完成 - 檔案大小: {file_size/1024:.1f}KB"
+        print(message)
+        self.on_output_message(f"[COMPLETE] {message}")
+    
+    def on_processing_finished(self, success, message):
+        """處理完成"""
+        # 恢復UI狀態
+        self.is_processing = False
+        self.pushButton.setText("切片")
+        self.pushButton.setStyleSheet("")  # 恢復原始樣式
+        
+        # 重新啟用控制項
+        self.toolButtonInput.setEnabled(True)
+        self.pushButton_fixgif.setEnabled(True)
+        self.pushButton_3.setEnabled(True)
+        
+        if success:
+            self.on_output_message(f"[FINISH] 處理成功完成！")
+            self.on_output_message(f"[RESULT] {message}")
+            # 設定完成狀態，但保持進度條和標籤顯示
+            self.progressBar.setValue(100)  # 確保進度條顯示100%
+            self.progressBar.setFormat("🎉 處理完成！")
+            QtWidgets.QMessageBox.information(self, "完成", message, QtWidgets.QMessageBox.Yes)
+        else:
+            self.on_output_message(f"[ERROR] 處理失敗: {message}")
+            # 即使失敗也保持進度條顯示，但重置為0
+            self.progressBar.setValue(0)
+            self.progressBar.setFormat("❌ 處理失敗 - 請重新開始")
+            if "取消" not in message:
+                QtWidgets.QMessageBox.critical(self, "處理錯誤", message, QtWidgets.QMessageBox.Yes)
+        
+        # 清理執行緒
+        if self.processing_thread:
+            self.processing_thread = None
+
+    def clear_output(self):
+        """清空輸出區域"""
+        self.textEdit_output.clear()
+        self.textEdit_output.append("[CLEARED] 輸出已清空")
+
+    def setup_preview_boxes(self):
+        """初始化 - 不顯示預設圖片"""
+        # 不顯示任何預設圖片，等待影片載入
+        pass
+
+    def show_startup_message(self):
+        """顯示程式啟動歡迎訊息 - 已移除，狀態訊息現在顯示在進度條上"""
+        pass
+
 
 if __name__ == '__main__':
-    app = QtWidgets.QApplication(sys.argv)
-    ui = Ui_MainWindow()
-    ui.setWindowTitle('SteamVideoCut')
-
-    # style_file = './style.qss'
-    # style_sheet = QSSLoader.read_qss_file(style_file)
-    # ui.setStyleSheet(style_sheet)
-
-    # app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
-    # app.setStyleSheet(qdarkstyle.load_stylesheet(qt_api='pyqt5'))
-
-    #apply_stylesheet(app, theme='dark_teal.xml')
-
-    ui.show()
-    sys.exit(app.exec_())
+    try:
+        app = QtWidgets.QApplication(sys.argv)
+        app.setStyle('Fusion')  # 設置現代化的視覺風格
+        
+        # 設置應用程式圖示（如果有的話）
+        # app.setWindowIcon(QtGui.QIcon('icon.ico'))
+        
+        # 創建主視窗
+        MainWindow = Ui_MainWindow()
+        MainWindow.show()
+        
+        print("Steam Workshop GIF Converter 程式已啟動")
+        
+        # 啟動應用程式事件循環
+        sys.exit(app.exec_())
+        
+    except Exception as e:
+        print(f"程式啟動失敗: {e}")
+        print(f"錯誤詳情: {traceback.format_exc()}")
+        input("按 Enter 鍵退出...")
