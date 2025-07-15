@@ -24,7 +24,7 @@ jobs:
           Remove-Item -Force SteamVideoClip.spec -ErrorAction SilentlyContinue
 
       - name: Build EXE
-        run: pyinstaller --onefile --windowed --icon=program_icon.ico SteamVideoClip.py --hidden-import=moviepy.editor --hidden-import=moviepy.audio --hidden-import=moviepy.video --hidden-import=PIL --hidden-import=PyQt5.QtCore --hidden-import=PyQt5.QtGui --hidden-import=PyQt5.QtWidgets --collect-all moviepy --collect-all imageio --collect-submodules moviepy --collect-submodules moviepy.editor --additional-hooks-dir=.
+        run: pyinstaller --onefile --windowed --icon=program_icon.ico SteamVideoClip.py 
         
       - name: Determine next version
         id: tag
