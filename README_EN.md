@@ -1,8 +1,8 @@
-# Steam-Workshop-GIF-Converter
+# Steam profile Customize tool
 
 [🇨🇳 中文版](README.md) | 🇺🇸 English
 
-A specialized video processing tool designed for Steam Workshop that automatically splits videos into 5 GIF segments and uploads them directly to Steam Workshop.
+A specialized video processing tool designed for Steam profile Workshop that automatically splits videos into 5 GIF segments and uploads them directly to Steam Workshop.
 
 ![Program Interface Screenshot](images/screenshot.png)
 
