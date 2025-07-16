@@ -1,4 +1,4 @@
-# Steam-Workshop-GIF-Converter
+# Steam-profile-Customize-tool
 
 🇨🇳 中文版 | [🇺🇸 English](README_EN.md)
 
