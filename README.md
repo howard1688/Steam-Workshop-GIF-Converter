@@ -1,12 +1,12 @@
-# Steam-profile-Customize-tool
+# Steam profile Customize tool
 
 🇨🇳 中文版 | [🇺🇸 English](README_EN.md)
 
-一個專為 Steam Workshop 設計的影片處理工具，可將影片自動切割成 5 個 GIF 片段並直接上傳到 Steam Workshop。
+一個專為 Steam profile Workshop 設計的影片處理工具，可將影片自動切割成 5 個 GIF 片段並直接上傳到 Steam Workshop 供自己布置個人檔案。
 
 ![程式介面截圖](images/screenshot.png)
 
-### 🎮 Steam Workshop 實際效果
+### 🎮 Steam profile Workshop 實際效果
 ![Steam Workshop 顯示結果](images/screenshot2.png)
 
 ## ✨ 主要功能
